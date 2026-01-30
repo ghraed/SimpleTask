@@ -8,9 +8,11 @@ Route::get('/', function () {
     return redirect()->route('tasks.index');
 });
 
-// Project routes
-Route::get('/projects/create', [ProjectController::class, 'create'])->name('projects.create');
-Route::post('/projects', [ProjectController::class, 'store'])->name('projects.store');
+// group the routes for better organization
+Route::group(['prefix' => 'projects', 'as' => 'projects.'], function () {
+    Route::get('/create', [ProjectController::class, 'create'])->name('create');
+    Route::post('', [ProjectController::class, 'store'])->name('store');
+});
 
 // Task routes
 Route::resource('tasks', TaskController::class)->except(['show', 'create']);
