@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ReorderTasksRequest;
+use App\Http\Requests\StoreTaskRequest;
+use App\Http\Requests\UpdateTaskRequest;
 use App\Models\Project;
 use App\Models\Task;
 use Illuminate\Http\JsonResponse;
@@ -27,20 +30,20 @@ class TaskController extends Controller
         return view('tasks.index', compact('projects', 'tasks', 'selectedProjectId'));
     }
 
-    public function store(Request $request): RedirectResponse
+    public function store(StoreTaskRequest $request): RedirectResponse
     {
-        $request->merge(['name' => trim($request->name)]);
+        // Auto-set priority for new tasks (bottom of project)
+        $priority = Task::where('project_id', $request->project_id)->max('priority') + 1;
 
-        $validatedRequest = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'project_id' => ['required', 'integer'],
+        Task::create([
+            'name' => $request->name,
+            'project_id' => $request->project_id,
+            'priority' => $priority,
         ]);
 
-        Task::create($validatedRequest);
-
         return redirect()
-            ->route('tasks.index', ['project_id' => $validatedRequest['project_id']])
-            ->with('success', 'Task created successfully!');
+            ->route('tasks.index', ['project_id' => $request->project_id])
+            ->with('success', 'Task "' . $request->name . '" created successfully!');
     }
 
     public function edit(Task $task): View
@@ -50,40 +53,32 @@ class TaskController extends Controller
         return view('tasks.edit', compact('task', 'projects'));
     }
 
-    public function update(Request $request, Task $task): RedirectResponse
+    public function update(UpdateTaskRequest $request, Task $task): RedirectResponse
     {
-        $request->merge(['name' => trim($request->name)]);
-
-        $validatedRequest = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-            'project_id' => ['required', 'integer'],
-        ]);
-
-        // Detect project change BEFORE any updates
-        $projectChanged = $task->project_id !== (int) $validatedRequest['project_id'];
+        $projectChanged = $task->project_id !== $request->project_id;
         $originalProjectId = $task->project_id;
         $originalPriority = $task->priority;
 
-        DB::transaction(function () use ($task, $validatedRequest, $projectChanged, $originalProjectId, $originalPriority) {
+        DB::transaction(function () use ($task, $request, $projectChanged, $originalProjectId, $originalPriority) {
             if ($projectChanged) {
-                // ✅ CRITICAL: Calculate new priority BEFORE changing project_id
-                $newPriority = Task::where('project_id', $validatedRequest['project_id'])->max('priority') ?? 0;
-                $newPriority++; // Priority in destination project
+                // Calculate new priority in DESTINATION project BEFORE changing project_id
+                $newPriority = Task::where('project_id', $request->project_id)->max('priority') ?? 0;
+                $newPriority++;
 
-                // Renumber Project A (close the gap left by moved task)
+                // Close gap in ORIGINAL project
                 Task::where('project_id', $originalProjectId)
                     ->where('priority', '>', $originalPriority)
                     ->decrement('priority');
 
-                // Update task with NEW project AND NEW priority in one atomic operation
+                // Update task with new project and priority
                 $task->update([
-                    'name' => $validatedRequest['name'],
-                    'project_id' => $validatedRequest['project_id'],
+                    'name' => $request->name,
+                    'project_id' => $request->project_id,
                     'priority' => $newPriority,
                 ]);
             } else {
-                // No project change - just update name
-                $task->update(['name' => $validatedRequest['name']]);
+                // Only update name when project unchanged
+                $task->update(['name' => $request->name]);
             }
         });
 
@@ -102,17 +97,12 @@ class TaskController extends Controller
             ->with('success', 'Task deleted successfully!');
     }
 
-    public function reorder(Request $request): JsonResponse
+    public function reorder(ReorderTasksRequest $request): JsonResponse
     {
-        $validatedRequest = $request->validate([
-            'task_ids' => ['required', 'array', 'min:1'],
-            'task_ids.*' => ['required', 'integer'],
-            'project_id' => ['required', 'integer'],
-        ]);
         try {
-            // Verify all tasks belong to the specified project
-            $invalidTasks = Task::where('project_id', '!=', $validatedRequest['project_id'])
-                ->whereIn('id', $validatedRequest['task_ids'])
+            // Verify all tasks belong to specified project
+            $invalidTasks = Task::where('project_id', '!=', $request->project_id)
+                ->whereIn('id', $request->task_ids)
                 ->exists();
 
             if ($invalidTasks) {
@@ -121,15 +111,15 @@ class TaskController extends Controller
                 ], 403);
             }
 
-            // Update priorities in a transaction
-            DB::transaction(function () use ($validatedRequest) {
-                foreach ($validatedRequest['task_ids'] as $index => $taskId) {
+            // Update priorities atomically
+            DB::transaction(function () use ($request) {
+                foreach ($request->task_ids as $index => $taskId) {
                     Task::where('id', $taskId)->update(['priority' => $index + 1]);
                 }
             });
 
             return response()->json(['success' => true]);
-        } catch (Throwable $e) {
+        } catch (\Throwable $e) {
             Log::error('Task reordering failed: ' . $e->getMessage());
             return response()->json(['error' => 'Reordering failed. Please try again.'], 500);
         }
