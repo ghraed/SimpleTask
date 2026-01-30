@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\StoreProjectRequest;
 use App\Models\Project;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -14,15 +15,11 @@ class ProjectController extends Controller
         return view('projects.create');
     }
 
-    public function store(Request $request)
+    public function store(StoreProjectRequest $request)
     {
-        $request->merge(['name' => trim($request->name)]);
+        Project::create($request->validated());
 
-        $validatedRequest = $request->validate([
-            'name' => ['required', 'string', 'max:255'],
-        ]);
 
-        Project::create($validatedRequest);
         Log::info('created');
         return redirect()
             ->route('tasks.index')
